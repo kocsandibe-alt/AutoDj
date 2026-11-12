@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Beatmatch Music Player</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #121212;
+            color: #ffffff;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+        .header {
+            padding: 18px;
+            font-size: 1.1rem;
+            font-weight: bold;
+            text-align: center;
+            border-bottom: 1px solid #282828;
+        }
+        .player-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            text-align: center;
+        }
+        .album-art {
+            width: 190px;
+            height: 190px;
+            background: linear-gradient(135deg, #1db954, #191414);
+            border-radius: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 4rem;
+            margin-bottom: 20px;
+        }
+        .song-title {
+            font-size: 1.2rem;
+            font-weight: bold;
+            margin-bottom: 6px;
+            max-width: 90%;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .song-status {
+            color: #1db954;
+            font-size: 0.85rem;
+            margin-bottom: 8px;
+            font-weight: bold;
+        }
+        .bpm-badge {
+            background-color: #282828;
+            color: #b3b3b3;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.8rem;
+            margin-bottom: 22px;
+        }
+        .controls {
+            display: flex;
+            align-items: center;
+            gap: 25px;
+        }
+        .btn {
+            background: none;
+            border: none;
+            color: #ffffff;
+            font-size: 1.5rem;
+            cursor: pointer;
+            padding: 10px;
+        }
+        .btn-main {
+            background-color: #1db954;
+            color: white;
+            width: 62px;
+            height: 62px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.6rem;
+            box-shadow: 0 4px 15px rgba(29, 185, 84, 0.4);
+        }
+        .playlist-section {
+            height: 200px;
+            background-color: #181818;
+            border-top-left-radius: 20px;
+            border-top-right-radius: 20px;
+            padding: 15px 20px;
+            overflow-y: auto;
+        }
+        .playlist-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            font-size: 0.9rem;
+            color: #b3b3b3;
+        }
+        .upload-btn {
+            background-color: #282828;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 15px;
+            font-size: 0.85rem;
+            cursor: pointer;
+        }
+        .track-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 9px 0;
+            border-bottom: 1px solid #282828;
+            font-size: 0.85rem;
+            cursor: pointer;
+        }
+        .track-name {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 78%;
+            text-align: left;
+        }
+        .track-bpm {
+            color: #888;
+            font-size: 0.78rem;
+        }
+        .track-item.active .track-name {
+            color: #1db954;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header">Music Player</div>
+
+    <div class="player-container">
+        <div class="album-art">🎵</div>
+        <div class="song-title" id="currentTitle">Válassz zenéket</div>
+        <div class="song-status" id="songStatus">Automix & Beatmatch kész</div>
+        <div class="bpm-badge" id="bpmBadge">-- BPM</div>
+
+        <div class="controls">
+            <button class="btn" onclick="prevTrack()">⏮</button>
+            <button class="btn btn-main" id="playBtn" onclick="togglePlay()">▶</button>
+            <button class="btn" onclick="nextTrack()">⏭</button>
+        </div>
+    </div>
+
+    <div class="playlist-section">
+        <div class="playlist-header">
+            <span>Lejátszási lista</span>
+            <input type="file" id="fileInput" multiple accept="audio/*" style="display: none;" onchange="handleFiles(this.files)">
+            <button class="upload-btn" onclick="document.getElementById('fileInput').click()">+ Zenék</button>
+        </div>
+        <div id="playlistContainer">
+            <div style="color: #666; text-align: center; margin-top: 20px;">Tölts be zenéket a telefonodról</div>
+        </div>
+    </div>
+
+    <script>
+        let playlist = [];
+        let currentIndex = 0;
+        let isPlaying = false;
+        let isMixing = false;
+
+        let audioCtx;
+        let currentSource = null;
+        let gainNodeA = null;
+        let trackStartTime = 0;
+        let trackOffset = 0;
+        let monitorTimer = null;
+
+        const FADE_TIME = 8.0; // 8 másodperces ütemre igazított átmenet
+
+        function initAudioContext() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+        }
+
+        // BPM és első ütés (downbeat) elemzése a hanghullámból
+        function analyzeTrack(audioBuffer) {
+            const sampleRate = audioBuffer.sampleRate;
+            const channelData = audioBuffer.getChannelData(0);
+            
+            // Első 45 másodperc elemzése a tempóhoz
+            const maxSamples = Math.min(channelData.length, sampleRate * 45);
+            const step = Math.floor(sampleRate / 100); // 10ms-es ablakok
+            let energies = [];
+
+            for (let i = 0; i < maxSamples; i += step) {
+                let sum = 0;
+                for (let j = 0; j < step && i + j < maxSamples; j++) {
+                    sum += channelData[i + j] * channelData[i + j];
+                }
+                energies.push(Math.sqrt(sum / step));
+            }
+
+            // Csúcsok (ütések) keresése
+            let peaks = [];
+            const threshold = Math.max(...energies) * 0.55;
+            for (let i = 2; i < energies.length - 2; i++) {
+                if (energies[i] > threshold && energies[i] > energies[i-1] && energies[i] > energies[i+1]) {
+                    if (peaks.length === 0 || (i - peaks[peaks.length - 1]) > 25) { // min 250ms távolság
+                        peaks.push(i);
+                    }
+                }
+            }
+
+            // Ütések közötti távolságokból BPM számítás
+            let intervals = {};
+            for (let i = 1; i < peaks.length; i++) {
+                let diff = peaks[i] - peaks[i - 1];
+                if (diff >= 30 && diff <= 85) { // ~70 - 200 BPM tartomány
+                    let bpm = Math.round(6000 / diff);
+                    while (bpm < 85) bpm *= 2;
+                    while (bpm > 165) bpm = Math.round(bpm / 2);
+                    intervals[bpm] = (intervals[bpm] || 0) + 1;
+                }
+            }
+
+            let bestBpm = 120;
+            let maxCount = 0;
+            for (let bpm in intervals) {
+                if (intervals[bpm] > maxCount) {
+                    maxCount = intervals[bpm];
+                    bestBpm = parseInt(bpm);
+                }
+            }
+
+            // Első erős ütem ideje másodpercben (hogy ne csenddel induljon a mix)
+            let firstBeat = peaks.length > 0 ? (peaks[0] * step) / sampleRate : 0;
+            return { bpm: bestBpm, firstBeat: firstBeat };
+        }
+
+        async function handleFiles(files) {
+            initAudioContext();
+            document.getElementById('songStatus').innerText = 'Ütemek (BPM) elemzése...';
+
+            for (let file of files) {
+                let arrayBuffer = await file.arrayBuffer();
+                let audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+                let analysis = analyzeTrack(audioBuffer);
+
+                playlist.push({
+                    name: file.name.replace(/\.[^/.]+$/, ""),
+                    buffer: audioBuffer,
+                    bpm: analysis.bpm,
+                    firstBeat: analysis.firstBeat
+                });
+            }
+
+            renderPlaylist();
+            document.getElementById('songStatus').innerText = 'Készen áll a lejátszásra';
+        }
+
+        function renderPlaylist() {
+            const container = document.getElementById('playlistContainer');
+            if (playlist.length === 0) return;
+
+            container.innerHTML = '';
+            playlist.forEach((track, index) => {
+                const div = document.createElement('div');
+                div.className = `track-item ${index === currentIndex ? 'active' : ''}`;
+                div.innerHTML = `
+                    <span class="track-name">${index + 1}. ${track.name}</span>
+                    <span class="track-bpm">${track.bpm} BPM</span>
+                `;
+                div.onclick = () => {
+                    stopAll();
+                    playTrack(index);
+                };
+                container.appendChild(div);
+            });
+        }
+
+        function stopAll() {
+            clearInterval(monitorTimer);
+            isMixing = false;
+            if (currentSource) {
+                try { currentSource.stop(); } catch (e) {}
+                currentSource = null;
+            }
+        }
+
+        function togglePlay() {
+            initAudioContext();
+            if (playlist.length === 0) {
+                document.getElementById('fileInput').click();
+                return;
+            }
+
+            if (isPlaying) {
+                stopAll();
+                isPlaying = false;
+                document.getElementById('playBtn').innerText = '▶';
+                document.getElementById('songStatus').innerText = 'Megállítva';
+            } else {
+                playTrack(currentIndex);
+            }
+        }
+
+        function playTrack(index) {
+            if (playlist.length === 0) return;
+            currentIndex = index;
+            let track = playlist[currentIndex];
+
+            document.getElementById('currentTitle').innerText = track.name;
+            document.getElementById('bpmBadge').innerText = `${track.bpm} BPM`;
+            document.getElementById('songStatus').innerText = 'Lejátszás';
+            renderPlaylist();
+
+            currentSource = audioCtx.createBufferSource();
+            currentSource.buffer = track.buffer;
+
+            gainNodeA = audioCtx.createGain();
+            gainNodeA.gain.setValueAtTime(1, audioCtx.currentTime);
+
+            currentSource.connect(gainNodeA);
+            gainNodeA.connect(audioCtx.destination);
+
+            trackStartTime = audioCtx.currentTime;
+            currentSource.start(0);
+            isPlaying = true;
+            isMixing = false;
+            document.getElementById('playBtn').innerText = '⏸';
+
+            startMixMonitor();
+        }
+
+        // Folyamatosan figyeli, mikor érünk a dal vége előtt FADE_TIME másodperccel
+        function startMixMonitor() {
+            clearInterval(monitorTimer);
+            monitorTimer = setInterval(() => {
+                if (!isPlaying || isMixing || playlist.length < 2) return;
+
+                let track = playlist[currentIndex];
+                let elapsed = audioCtx.currentTime - trackStartTime;
+                let remaining = track.buffer.duration - elapsed;
+
+                if (remaining <= FADE_TIME && remaining > 0.5) {
+                    triggerBeatmatchMix();
+                }
+            }, 100);
+        }
+
+        function triggerBeatmatchMix() {
+            isMixing = true;
+            let currentTrack = playlist[currentIndex];
+            let nextIndex = (currentIndex + 1) % playlist.length;
+            let nextTrack = playlist[nextIndex];
+
+            // 1. Tempó arány kiszámítása (Beatmatch)
+            let rateRatio = currentTrack.bpm / nextTrack.bpm;
+            // Túl nagy különbségnél (pl. +20% felett) korlátozzuk, hogy ne torzuljon el a hang
+            if (rateRatio > 1.15) rateRatio = 1.15;
+            if (rateRatio < 0.85) rateRatio = 0.85;
+
+            // 2. Következő pontos ütem kiszámítása az aktuális dalban
+            let beatDuration = 60 / currentTrack.bpm;
+            let elapsed = audioCtx.currentTime - trackStartTime;
+            let timeSinceFirstBeat = Math.max(0, elapsed - currentTrack.firstBeat);
+            let beatsPassed = Math.ceil(timeSinceFirstBeat / beatDuration);
+            let nextBeatTimeInTrack = currentTrack.firstBeat + (beatsPassed * beatDuration);
+            let delayUntilNextBeat = Math.max(0.05, nextBeatTimeInTrack - elapsed);
+
+            let mixStartTime = audioCtx.currentTime + delayUntilNextBeat;
+
+            document.getElementById('songStatus').innerText = `Beatmatch mix (${currentTrack.bpm} → ${nextTrack.bpm} BPM)...`;
+
+            // Következő szám előkészítése
+            let nextSource = audioCtx.createBufferSource();
+            nextSource.buffer = nextTrack.buffer;
+            
+            // Sebesség hozzáigazítása az előző számhoz, majd lassú visszaállás saját tempóra
+            nextSource.playbackRate.setValueAtTime(rateRatio, mixStartTime);
+            nextSource.playbackRate.linearRampToValueAtTime(1.0, mixStartTime + FADE_TIME + 3.0);
+
+            let gainNodeB = audioCtx.createGain();
+            gainNodeB.gain.setValueAtTime(0.001, mixStartTime);
+            gainNodeB.gain.linearRampToValueAtTime(1.0, mixStartTime + FADE_TIME);
+
+            nextSource.connect(gainNodeB);
+            gainNodeB.connect(audioCtx.destination);
+
+            // Indítás pontosan az ütemre, a következő dal első erős ütésétől
+            nextSource.start(mixStartTime, nextTrack.firstBeat);
+
+            // Régi dal lehalkítása ugyanabban az ütemben
+            if (gainNodeA) {
+                gainNodeA.gain.setValueAtTime(1.0, mixStartTime);
+                gainNodeA.gain.linearRampToValueAtTime(0.001, mixStartTime + FADE_TIME);
+            }
+
+            let oldSource = currentSource;
+
+            // Átmenet lezárása
+            setTimeout(() => {
+                if (oldSource) {
+                    try { oldSource.stop(); } catch (e) {}
+                }
+                currentSource = nextSource;
+                gainNodeA = gainNodeB;
+                currentIndex = nextIndex;
+                trackStartTime = mixStartTime - nextTrack.firstBeat;
+                isMixing = false;
+
+                document.getElementById('currentTitle').innerText = nextTrack.name;
+                document.getElementById('bpmBadge').innerText = `${nextTrack.bpm} BPM`;
+                document.getElementById('songStatus').innerText = 'Lejátszás';
+                renderPlaylist();
+            }, (delayUntilNextBeat + FADE_TIME) * 1000);
+        }
+
+        function nextTrack() {
+            if (playlist.length === 0) return;
+            if (playlist.length > 1 && isPlaying && !isMixing) {
+                triggerBeatmatchMix(); // Kézi léptetésnél is ütemre kever!
+            } else {
+                stopAll();
+                playTrack((currentIndex + 1) % playlist.length);
+            }
+        }
+
+        function prevTrack() {
+            if (playlist.length === 0) return;
+            stopAll();
+            playTrack((currentIndex - 1 + playlist.length) % playlist.length);
+        }
+    </script>
+</body>
+</html>
